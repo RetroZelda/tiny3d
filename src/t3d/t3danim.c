@@ -151,6 +151,8 @@ static void rewind_anim(T3DAnim *anim)
   stream_rewind(anim);
 }
 
+static inline bool load_keyframe(T3DAnim *anim);
+
 void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
   if(anim->targetsQuat)free(anim->targetsQuat);
 
@@ -185,6 +187,28 @@ void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
       default: {assertf(false, "Unknown animation target %d", channelMap->targetType);}
     }
   }
+
+  // Prime every channel with its first keyframe, so the first interpolation starts from the
+  // animation's own values instead of the zeroed (calloc) targets, which made bones pop
+  // (e.g. zero scale or rotation) for the first frames after attaching. Rewound afterwards.
+  uint32_t initCount = 0;
+  while(initCount < channelCount) {
+    if(!load_keyframe(anim))break;
+    initCount = 0;
+    for(int c = 0; c < anim->animRef->channelsQuat; c++) {
+      if(anim->targetsQuat[c].base.timeEnd > 0)initCount++;
+    }
+    for(int c = 0; c < anim->animRef->channelsScalar; c++) {
+      if(anim->targetsScalar[c].base.timeEnd > 0)initCount++;
+    }
+  }
+  for(int c = 0; c < anim->animRef->channelsQuat; c++) {
+    anim->targetsQuat[c].kfCurr = anim->targetsQuat[c].kfNext;
+  }
+  for(int c = 0; c < anim->animRef->channelsScalar; c++) {
+    anim->targetsScalar[c].kfCurr = anim->targetsScalar[c].kfNext;
+  }
+  rewind_anim(anim);
 }
 
 inline static void attach_scalar(T3DAnim* anim, uint32_t targetIdx, T3DVec3* target, int32_t *updateFlag, uint8_t targetType) {
