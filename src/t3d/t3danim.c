@@ -151,7 +151,7 @@ static void rewind_anim(T3DAnim *anim)
   stream_rewind(anim);
 }
 
-static inline bool load_keyframe(T3DAnim *anim);
+static inline T3DAnimTargetBase* load_keyframe(T3DAnim *anim);
 
 void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
   if(anim->targetsQuat)free(anim->targetsQuat);
@@ -191,16 +191,14 @@ void t3d_anim_attach(T3DAnim *anim, const T3DSkeleton *skeleton) {
   // Prime every channel with its first keyframe, so the first interpolation starts from the
   // animation's own values instead of the zeroed (calloc) targets, which made bones pop
   // (e.g. zero scale or rotation) for the first frames after attaching. Rewound afterwards.
+  // A channel counts once, on the keyframe that moves its end time off zero: load_keyframe copies the
+  // old end time into timeStart, so that keyframe is the one that leaves timeStart == 0 and timeEnd > 0.
+  // (Recounting every channel after each keyframe made this O(keyframes * channels), ~10ms for 150 channels.)
   uint32_t initCount = 0;
   while(initCount < channelCount) {
-    if(!load_keyframe(anim))break;
-    initCount = 0;
-    for(int c = 0; c < anim->animRef->channelsQuat; c++) {
-      if(anim->targetsQuat[c].base.timeEnd > 0)initCount++;
-    }
-    for(int c = 0; c < anim->animRef->channelsScalar; c++) {
-      if(anim->targetsScalar[c].base.timeEnd > 0)initCount++;
-    }
+    T3DAnimTargetBase *target = load_keyframe(anim);
+    if(!target)break;
+    if(target->timeStart == 0.0f && target->timeEnd > 0.0f)initCount++;
   }
   for(int c = 0; c < anim->animRef->channelsQuat; c++) {
     anim->targetsQuat[c].kfCurr = anim->targetsQuat[c].kfNext;
@@ -266,9 +264,10 @@ static inline T3DAnimTargetBase* get_base_target(T3DAnim *anim, uint64_t channel
     (T3DAnimTargetBase*)&anim->targetsScalar[channelIdx - anim->animRef->channelsQuat];
 }
 
-static inline bool load_keyframe(T3DAnim *anim) {
+// Loads the next keyframe of the stream, returns the channel it was loaded into (NULL at the end of the stream)
+static inline T3DAnimTargetBase* load_keyframe(T3DAnim *anim) {
   T3DAnimKF kf __attribute__((aligned(8), uninitialized)); // 8-byte aligned for the 64-bit copy
-  if(!stream_read_kf(anim, &kf))return false;
+  if(!stream_read_kf(anim, &kf))return NULL;
 
   bool isLarge = kf.nextTime & 0x8000;
   anim->nextKfSize = isLarge ? sizeof(T3DAnimKF) : (sizeof(T3DAnimKF)-2);
@@ -295,7 +294,7 @@ static inline bool load_keyframe(T3DAnim *anim) {
     target->kfNext = (float)kf.data[0] * channelMap->quantScale + channelMap->quantOffset;
   }
 
-  return true;
+  return targetBase;
 }
 
 // Local copy for better cache usage
